@@ -1,0 +1,7 @@
+flask
+flask-cors
+python-dotenv
+requests
+huggingface_hub
+replicate
+music21
