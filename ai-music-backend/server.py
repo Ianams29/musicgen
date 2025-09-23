@@ -152,104 +152,157 @@ def process_score():
 
         # --- 2. Audiveris 실행 경로 설정 ---
         audiveris_folder_name = 'app-5.7.1'
-        audiveris_dist_path = os.path.join(backend_dir, audiveris_folder_name)
-        audiveris_bin_path = os.path.join(audiveris_dist_path, 'bin')
-        audiveris_executable = os.path.join(audiveris_bin_path, 'Audiveris.bat')
-
-        if not os.path.isfile(audiveris_executable):
-            return jsonify({'message': f"Audiveris 실행 파일을 찾을 수 없습니다: {audiveris_executable}"}), 500
+        audiveris_lib_path = os.path.join(backend_dir, audiveris_folder_name, 'lib', '*')
+        main_class = 'org.audiveris.omr.Main'
 
         try:
-            # --- 3. Audiveris 공식 실행 파일 호출 (메모리 및 시간 제한 추가) ---
+            # --- 3. Audiveris 실행 (올바른 옵션으로 수정!) ---
             print(f"Audiveris 실행 시작: {pdf_path}")
             
-            # Popen을 사용하여 프로세스를 시작하고, communicate로 시간제한을 겁니다.
-            process = subprocess.Popen(
+            result = subprocess.run(
                 [
-                    audiveris_executable,
-                    '-batch',
-                    '-input', pdf_path,
-                    '-output', upload_folder,
-                    '-export',
-                    # 자바에 최대 1GB 메모리를 할당하는 옵션 추가
-                    '-J-Xmx1g' 
+                    'java',
+                    '--enable-preview',  # Java 프리뷰 기능 활성화
+                    '-cp', audiveris_lib_path,
+                    '-Djava.awt.headless=true',
+                    '-Xmx2g',           # 메모리를 2GB로 증가
+                    '-Duser.language=en',  # 언어를 영어로 설정
+                    '-Duser.country=US',
+                    main_class,
+                    '-batch',           # GUI 없이 실행
+                    '-export',          # MusicXML 내보내기
+                    '-output', upload_folder,  # 출력 폴더 지정
+                    pdf_path           # 입력 파일
                 ],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                capture_output=True,
                 text=True,
-                encoding='cp949',
-                shell=True
+                encoding='utf-8',   # UTF-8 인코딩 사용
+                timeout=180         # 타임아웃을 3분으로 증가
             )
-            
-            # 2분 (120초) 안에 끝나지 않으면 TimeoutExpired 오류를 발생시킴
-            stdout, stderr = process.communicate(timeout=120)
 
             print("Audiveris 실행 완료")
 
-            if process.returncode != 0:
+            if result.returncode != 0:
                 print("----- Audiveris Stderr -----")
-                print(stderr)
+                print(result.stderr)
                 print("----- Audiveris Stdout -----")
-                print(stdout)
-                raise subprocess.CalledProcessError(process.returncode, process.args, stdout, stderr)
+                print(result.stdout)
+                
+                # OCR 언어 경고는 무시하고 계속 진행
+                if "UnsupportedClassVersionError" in result.stderr or "Preview features" in result.stderr:
+                    raise subprocess.CalledProcessError(result.returncode, result.args, result.stdout, result.stderr)
+                elif "No installed OCR languages" in result.stdout:
+                    print("OCR 언어 패키지가 없지만 악보 인식은 계속 진행합니다.")
+                else:
+                    raise subprocess.CalledProcessError(result.returncode, result.args, result.stdout, result.stderr)
 
             # 4. 변환된 파일 이름 찾기
+            print(f"출력 폴더 내용 확인: {os.listdir(upload_folder)}")
+            
             base_pdf_name = os.path.splitext(os.path.basename(pdf_path))[0]
-            mxl_path = os.path.join(upload_folder, f"{base_pdf_name}.mxl")
-            xml_path = os.path.join(upload_folder, f"{unique_filename}.xml")
-
-            if os.path.exists(mxl_path):
-                os.rename(mxl_path, xml_path)
-            elif not os.path.exists(xml_path):
+            
+            # 가능한 출력 파일 형식들 확인 (.mxl 우선)
+            possible_extensions = ['.mxl', '.xml', '.musicxml']
+            music_file_path = None
+            
+            for ext in possible_extensions:
+                potential_path = os.path.join(upload_folder, f"{base_pdf_name}{ext}")
+                if os.path.exists(potential_path):
+                    music_file_path = potential_path
+                    print(f"변환된 파일 발견: {music_file_path}")
+                    break
+            
+            # 직접적인 파일명으로 찾을 수 없으면 폴더에서 검색
+            if not music_file_path:
+                for file in os.listdir(upload_folder):
+                    if any(file.endswith(ext) for ext in possible_extensions) and file != os.path.basename(pdf_path):
+                        music_file_path = os.path.join(upload_folder, file)
+                        print(f"폴더 검색으로 발견된 파일: {music_file_path}")
+                        break
+            
+            if not music_file_path or not os.path.exists(music_file_path):
                 raise FileNotFoundError("MusicXML 파일이 변환 후 생성되지 않았습니다.")
 
         except subprocess.TimeoutExpired:
             print("!!! Audiveris 실행 시간 초과 !!!")
-            process.kill() # 프로세스 강제 종료
             return jsonify({'message': '악보 변환 작업이 너무 오래 걸려 중단되었습니다.'}), 500
         except subprocess.CalledProcessError as e:
-            print("----- Audiveris Stderr -----")
-            print(e.stderr)
-            print("----- Audiveris Stdout -----")
-            print(e.stdout)
             return jsonify({'message': 'PDF를 MusicXML로 변환하는데 실패했습니다.'}), 500
         except FileNotFoundError as e:
             print(f"파일을 찾을 수 없습니다: {e}")
             return jsonify({'message': '변환된 MusicXML 파일을 찾을 수 없습니다.'}), 500
 
-        # --- (이하 MusicXML 파싱 및 음악 생성 로직은 이전과 동일합니다) ---
+        # --- 5. MusicXML 파싱 및 음악 생성 ---
         try:
-            score = converter.parse(xml_path)
-            notes_to_process = score.flat.notesAndRests[:8] # 프롬프트 정확도를 위해 8개 음표로 늘림
+            print(f"Music21로 파일 파싱 시작: {music_file_path}")
+            score = converter.parse(music_file_path)  # Music21은 MXL 파일을 직접 처리 가능
+            
+            # 악보에서 음표 추출
+            notes_to_process = score.flat.notesAndRests[:12]  # 더 많은 음표 사용
             prompt_notes = []
+            
             for element in notes_to_process:
                 if isinstance(element, note.Note):
                     prompt_notes.append(str(element.pitch))
                 elif isinstance(element, chord.Chord):
                     prompt_notes.append('.'.join(str(p) for p in element.pitches))
             
-            music_prompt = ' '.join(prompt_notes)
+            # 악보 정보를 바탕으로 프롬프트 생성
+            music_prompt = ' '.join(prompt_notes[:8])  # 처음 8개 음표만 사용
             if not music_prompt:
-                music_prompt = "classical piano"
+                music_prompt = "classical piano melody"
+            else:
+                music_prompt = f"classical music with notes: {music_prompt}"
+            
+            print(f"생성된 음악 프롬프트: {music_prompt}")
 
         except Exception as e:
-            print(f"Music21 오류: {e}")
-            music_prompt = "gentle classical music"
+            print(f"Music21 파싱 오류: {e}")
+            print(f"기본 프롬프트로 대체합니다.")
+            music_prompt = "gentle classical piano music"
 
         try:
-            music_url = generate_music(music_prompt, 10) 
+            # 음악 생성을 위한 태스크 ID 생성
+            task_id = uuid.uuid4().hex
+            _set_task_status(task_id, "queued")
             
-            os.remove(pdf_path)
-            if os.path.exists(xml_path):
-                os.remove(xml_path)
+            # 음악 생성 워커 시작
+            threading.Thread(
+                target=worker_generate,
+                args=(task_id, music_prompt, [], [], 10, None),
+                daemon=True
+            ).start()
             
-            return jsonify({'musicUrl': music_url})
+            # 임시 파일 정리
+            try:
+                os.remove(pdf_path)
+                if music_file_path and os.path.exists(music_file_path):
+                    os.remove(music_file_path)
+                # 로그 파일도 정리
+                log_files = [f for f in os.listdir(upload_folder) if f.endswith('.log')]
+                for log_file in log_files:
+                    try:
+                        os.remove(os.path.join(upload_folder, log_file))
+                    except:
+                        pass
+                # OMR 파일도 정리
+                omr_files = [f for f in os.listdir(upload_folder) if f.endswith('.omr')]
+                for omr_file in omr_files:
+                    try:
+                        os.remove(os.path.join(upload_folder, omr_file))
+                    except:
+                        pass
+            except Exception as cleanup_error:
+                print(f"파일 정리 중 오류: {cleanup_error}")
+            
+            return jsonify({'taskId': task_id})
 
         except Exception as e:
             print(f"음악 생성 오류: {e}")
             return jsonify({'message': '음악 생성에 실패했습니다.'}), 500
 
     return jsonify({'message': '잘못된 파일 형식입니다.'}), 400
+
 # ───── endpoints ────────────────────────────────────────────────────
 @app.route("/api/music/generate", methods=["POST"])
 def generate_music():

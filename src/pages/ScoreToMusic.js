@@ -2,7 +2,7 @@
 
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useMusicContext } from '../context/MusicContext'; // 수정된 부분: useMusicContext 훅을 직접 import 합니다.
+import { useMusicContext } from '../context/MusicContext';
 import {
     Container,
     Typography,
@@ -19,7 +19,6 @@ const ScoreToMusic = () => {
     const [fileName, setFileName] = useState('');
     const navigate = useNavigate();
     
-    // 수정된 부분: useMusicContext 훅을 호출하여 'actions'를 가져옵니다.
     const { actions } = useMusicContext();
 
     const handleFileChange = (event) => {
@@ -34,6 +33,53 @@ const ScoreToMusic = () => {
         }
     };
 
+    // 작업 상태를 폴링하는 함수
+    const pollTaskStatus = async (taskId) => {
+        const maxAttempts = 60; // 최대 5분 대기 (5초 간격)
+        let attempts = 0;
+
+        while (attempts < maxAttempts) {
+            try {
+                const response = await fetch(`http://127.0.0.1:5000/api/music/task/status?taskId=${taskId}`);
+                if (!response.ok) {
+                    throw new Error('작업 상태 확인 실패');
+                }
+
+                const statusData = await response.json();
+                
+                if (statusData.status === 'succeeded') {
+                    // 성공: result에 음악 데이터를 저장
+                    actions.setResult?.({
+                        generatedMusic: {
+                            id: statusData.result?.id || `score_${Date.now()}`,
+                            title: statusData.result?.title || `악보 기반 생성 음악`,
+                            audioUrl: statusData.audioUrl,
+                            genres: statusData.result?.genres || [],
+                            moods: statusData.result?.moods || [],
+                            duration: statusData.result?.duration || 10,
+                            createdAt: statusData.result?.createdAt || new Date().toISOString(),
+                            type: 'score-generated'
+                        }
+                    });
+                    return true;
+                } else if (statusData.status === 'failed') {
+                    throw new Error(statusData.error || '음악 생성 실패');
+                } else if (statusData.status === 'running' || statusData.status === 'queued') {
+                    // 진행중: 5초 후 다시 확인
+                    await new Promise(resolve => setTimeout(resolve, 5000));
+                    attempts++;
+                } else {
+                    throw new Error(`알 수 없는 작업 상태: ${statusData.status}`);
+                }
+            } catch (error) {
+                console.error('작업 상태 확인 중 오류:', error);
+                throw error;
+            }
+        }
+        
+        throw new Error('작업 시간 초과 (5분)');
+    };
+
     const handleSubmit = async () => {
         if (!pdfFile) {
             alert("악보 PDF 파일을 업로드해주세요.");
@@ -45,6 +91,7 @@ const ScoreToMusic = () => {
         formData.append('score', pdfFile);
 
         try {
+            // 1. 악보 처리 요청
             const response = await fetch('http://127.0.0.1:5000/api/process-score', {
                 method: 'POST',
                 body: formData,
@@ -56,14 +103,17 @@ const ScoreToMusic = () => {
             }
 
             const data = await response.json();
-            
-            // 수정된 부분: 기존 'completeGeneration' 액션을 사용하여 결과 상태를 업데이트합니다.
-            actions.completeGeneration({
-                musicUrl: data.musicUrl,
-                prompt: `악보 '${fileName}' 기반으로 생성된 음악`
-            });
+            const taskId = data.taskId;
 
-            navigate('/result'); // 결과 페이지로 이동
+            if (!taskId) {
+                throw new Error('작업 ID를 받을 수 없습니다.');
+            }
+
+            // 2. 작업 상태 폴링
+            await pollTaskStatus(taskId);
+
+            // 3. 결과 페이지로 이동
+            navigate('/result');
 
         } catch (error) {
             console.error("Error generating music from score:", error);
@@ -116,6 +166,12 @@ const ScoreToMusic = () => {
                 >
                     {isLoading ? <CircularProgress size={24} /> : '음악 생성'}
                 </Button>
+
+                {isLoading && (
+                    <Typography variant="body2" sx={{ mt: 2, color: 'text.secondary' }}>
+                        악보를 분석하고 음악을 생성하는 중입니다... 최대 5분이 소요될 수 있습니다.
+                    </Typography>
+                )}
             </Paper>
         </Container>
     );
