@@ -127,7 +127,7 @@ def worker_generate(task_id: str, prompt: str, genres, moods, duration: int,
             try: os.remove(tmp_path)
             except Exception: pass
 
-# PDF 악보 처리 및 MIDI 파일 생성 API 엔드포인트
+# PDF 악보 처리 및 오디오 파일 생성 API 엔드포인트
 @app.route('/api/process-score', methods=['POST'])
 def process_score():
     if 'score' not in request.files:
@@ -236,12 +236,12 @@ def process_score():
             print(f"파일을 찾을 수 없습니다: {e}")
             return jsonify({'message': '변환된 MusicXML 파일을 찾을 수 없습니다.'}), 500
 
-        # --- 5. MusicXML -> MIDI 변환 ---
+        # --- 5. MusicXML -> WAV 변환 (브라우저 재생 가능) ---
         try:
             print(f"Music21로 파일 파싱 시작: {music_file_path}")
             score = converter.parse(music_file_path)
             
-            # MIDI 파일 생성
+            # MIDI 파일 생성 (중간 단계)
             midi_filename = f"{unique_filename}.mid"
             midi_path = os.path.join(midi_folder, midi_filename)
             
@@ -249,32 +249,62 @@ def process_score():
             score.write('midi', fp=midi_path)
             print(f"MIDI 파일 생성 완료: {midi_path}")
             
-            # 곡 길이 계산
-            duration = int(score.duration.quarterLength / score.metronomeMarkBoundaries()[0][-1].number * 60) if score.metronomeMarkBoundaries() else 180
-
-            # MIDI 파일 URL 생성 (Flask에서 서빙)
-            midi_url = f"http://127.0.0.1:5000/api/midi/{midi_filename}"
+            # WAV 파일로 변환 시도
+            wav_filename = f"{unique_filename}.wav"
+            wav_path = os.path.join(midi_folder, wav_filename)
             
+            try:
+                print(f"WAV 파일 변환 중: {wav_path}")
+                from midi2audio import FluidSynth
+                fs = FluidSynth(
+                    sound_font=r'C:\soundfonts\FluidR3_GM.sf2',
+                    executable=r'C:\Program Files\FluidSynth\bin\fluidsynth.exe'
+                )
+
+                fs.midi_to_audio(midi_path, wav_path)
+                print(f"WAV 파일 생성 완료: {wav_path}")
+                
+                # WAV 파일 사용
+                audio_url = f"http://127.0.0.1:5000/api/audio/{wav_filename}"
+                audio_path = wav_path
+            except Exception as e:
+                print(f"FluidSynth 변환 실패: {e}")
+                import traceback
+                traceback.print_exc()
+                print("MIDI 파일을 그대로 사용합니다 (브라우저 재생 제한 있음)")
+                audio_url = f"http://127.0.0.1:5000/api/audio/{midi_filename}"
+                audio_path = midi_path
+            
+            # 곡 길이 계산
+            try:
+                if score.metronomeMarkBoundaries():
+                    tempo = score.metronomeMarkBoundaries()[0][-1].number
+                    duration = int(score.duration.quarterLength / tempo * 60)
+                else:
+                    duration = 180
+            except:
+                duration = 180
+
             # 결과 데이터 생성
             result_data = {
                 "id": unique_filename,
                 "title": f"악보 연주 - {uploaded_file.filename}",
-                "audioUrl": midi_url,
-                "midiPath": midi_path,
+                "audioUrl": audio_url,
+                "audioPath": audio_path,
                 "genres": ["Classical"],
                 "moods": [],
                 "duration": duration,
                 "createdAt": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                "type": "score-midi"
+                "type": "score-audio"
             }
 
-            print(f"MIDI 파일 준비 완료: {result_data}")
+            print(f"오디오 파일 준비 완료: {result_data}")
 
         except Exception as e:
-            print(f"MIDI 변환 오류: {e}")
+            print(f"오디오 변환 오류: {e}")
             import traceback
             traceback.print_exc()
-            return jsonify({'message': f'MIDI 변환 중 오류가 발생했습니다: {str(e)}'}), 500
+            return jsonify({'message': f'오디오 변환 중 오류가 발생했습니다: {str(e)}'}), 500
 
         finally:
             # 임시 파일 정리
@@ -299,17 +329,26 @@ def process_score():
 
     return jsonify({'message': '잘못된 파일 형식입니다.'}), 400
 
-# MIDI 파일 서빙 엔드포인트
-@app.route('/api/midi/<filename>', methods=['GET'])
-def serve_midi(filename):
+# 오디오 파일 서빙 엔드포인트 (MIDI/WAV 모두 지원)
+@app.route('/api/audio/<filename>', methods=['GET'])
+def serve_audio(filename):
     backend_dir = os.path.dirname(os.path.abspath(__file__))
     midi_folder = os.path.join(backend_dir, 'generated_midi')
-    midi_path = os.path.join(midi_folder, filename)
+    audio_path = os.path.join(midi_folder, filename)
     
-    if os.path.exists(midi_path):
-        return send_file(midi_path, mimetype='audio/midi', as_attachment=False)
+    if os.path.exists(audio_path):
+        if filename.endswith('.mid'):
+            mimetype = 'audio/midi'
+        elif filename.endswith('.wav'):
+            mimetype = 'audio/wav'
+        elif filename.endswith('.mp3'):
+            mimetype = 'audio/mpeg'
+        else:
+            mimetype = 'application/octet-stream'
+        
+        return send_file(audio_path, mimetype=mimetype, as_attachment=False)
     else:
-        return jsonify({'message': 'MIDI 파일을 찾을 수 없습니다.'}), 404
+        return jsonify({'message': '오디오 파일을 찾을 수 없습니다.'}), 404
 
 # ───── endpoints ────────────────────────────────────────────────────
 @app.route("/api/music/generate", methods=["POST"])

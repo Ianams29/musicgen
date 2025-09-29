@@ -95,10 +95,10 @@ const ScoreToMusic = () => {
         <Container maxWidth="md" sx={{ mt: 4 }}>
             <Paper elevation={3} sx={{ p: 4, textAlign: 'center' }}>
                 <Typography variant="h4" gutterBottom>
-                    악보 연주하기 🎼
+                    악보 연주하기
                 </Typography>
                 <Typography variant="body1" color="text.secondary" sx={{ mb: 4 }}>
-                    PDF 악보 파일을 업로드하면 AI가 분석하여 MIDI로 연주해줍니다.
+                    PDF 악보 파일을 업로드하면 AI가 분석하여 MIDI로 변환해줍니다.
                 </Typography>
 
                 <Box
@@ -137,7 +137,7 @@ const ScoreToMusic = () => {
                     disabled={isLoading || !pdfFile}
                     sx={{ minWidth: '200px', minHeight: '50px' }}
                 >
-                    {isLoading ? <CircularProgress size={24} /> : 'MIDI 생성 및 연주'}
+                    {isLoading ? <CircularProgress size={24} /> : 'MIDI 변환'}
                 </Button>
 
                 {isLoading && (
