@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional, List
 from music21 import converter, note, chord, stream
 
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 from dotenv import load_dotenv
 from werkzeug.utils import secure_filename
@@ -127,33 +127,35 @@ def worker_generate(task_id: str, prompt: str, genres, moods, duration: int,
             try: os.remove(tmp_path)
             except Exception: pass
 
-# PDF 악보 처리 및 음악 생성 API 엔드포인트
+# PDF 악보 처리 및 MIDI 파일 생성 API 엔드포인트
 @app.route('/api/process-score', methods=['POST'])
 def process_score():
     if 'score' not in request.files:
         return jsonify({'message': '악보 파일이 없습니다.'}), 400
     
-    file = request.files['score']
+    uploaded_file = request.files['score']
 
-    if file.filename == '':
+    if uploaded_file.filename == '':
         return jsonify({'message': '파일이 선택되지 않았습니다.'}), 400
 
-    if file and file.filename.endswith('.pdf'):
+    if uploaded_file and uploaded_file.filename.endswith('.pdf'):
         # --- 1. 경로 설정 ---
         backend_dir = os.path.dirname(os.path.abspath(__file__))
         upload_folder = os.path.join(backend_dir, 'temp_scores')
+        midi_folder = os.path.join(backend_dir, 'generated_midi')
         os.makedirs(upload_folder, exist_ok=True)
+        os.makedirs(midi_folder, exist_ok=True)
         
         unique_filename = str(uuid.uuid4())
         pdf_path = os.path.join(upload_folder, f"{unique_filename}.pdf")
-        file.save(pdf_path)
+        uploaded_file.save(pdf_path)
 
         # --- 2. Audiveris 실행 경로 설정 ---
         audiveris_jar_path = r"C:\Program Files\Audiveris\app"
         java_executable = r"C:\Program Files\Audiveris\runtime\bin\java"
 
         try:
-            # --- 3. Audiveris 실행 ---
+            # --- 3. Audiveris 실행 (PDF -> MusicXML) ---
             print(f"Audiveris 실행 시작: {pdf_path}")
             print(f"Audiveris jar 경로: {audiveris_jar_path}")
             
@@ -163,7 +165,7 @@ def process_score():
                 if file_name.endswith('.jar'):
                     jar_files.append(os.path.join(audiveris_jar_path, file_name))
             
-            classpath = ';'.join(jar_files)  # Windows는 세미콜론으로 구분
+            classpath = ';'.join(jar_files)
             print(f"클래스패스에 {len(jar_files)}개 JAR 파일 추가")
             
             result = subprocess.run(
@@ -194,7 +196,6 @@ def process_score():
                 print("----- Audiveris Stdout -----")
                 print(result.stdout)
                 
-                # OCR 언어 경고는 무시하고 계속 진행
                 if "UnsupportedClassVersionError" in result.stderr or "Preview features" in result.stderr:
                     raise subprocess.CalledProcessError(result.returncode, result.args, result.stdout, result.stderr)
                 elif "No installed OCR languages" in result.stdout:
@@ -202,12 +203,10 @@ def process_score():
                 else:
                     raise subprocess.CalledProcessError(result.returncode, result.args, result.stdout, result.stderr)
 
-            # --- 4. 변환된 파일 이름 찾기 ---
+            # --- 4. 변환된 MusicXML 파일 찾기 ---
             print(f"출력 폴더 내용 확인: {os.listdir(upload_folder)}")
             
             base_pdf_name = os.path.splitext(os.path.basename(pdf_path))[0]
-            
-            # 가능한 출력 파일 형식들 확인 (.mxl 우선)
             possible_extensions = ['.mxl', '.xml', '.musicxml']
             music_file_path = None
             
@@ -218,10 +217,9 @@ def process_score():
                     print(f"변환된 파일 발견: {music_file_path}")
                     break
             
-            # 직접적인 파일명으로 찾을 수 없으면 폴더에서 검색
             if not music_file_path:
                 for file_item in os.listdir(upload_folder):
-                    if any(file_item.endswith(ext) for ext in possible_extensions) and file_item != os.path.basename(pdf_path):
+                    if any(file_item.endswith(ext) for ext in possible_extensions):
                         music_file_path = os.path.join(upload_folder, file_item)
                         print(f"폴더 검색으로 발견된 파일: {music_file_path}")
                         break
@@ -238,85 +236,84 @@ def process_score():
             print(f"파일을 찾을 수 없습니다: {e}")
             return jsonify({'message': '변환된 MusicXML 파일을 찾을 수 없습니다.'}), 500
 
-        # --- 5. MusicXML 파싱 및 음악 생성 ---
+        # --- 5. MusicXML -> MIDI 변환 ---
         try:
             print(f"Music21로 파일 파싱 시작: {music_file_path}")
             score = converter.parse(music_file_path)
             
-            # 악보에서 음표 추출
-            notes_to_process = score.flat.notesAndRests[:12]
-            prompt_notes = []
+            # MIDI 파일 생성
+            midi_filename = f"{unique_filename}.mid"
+            midi_path = os.path.join(midi_folder, midi_filename)
             
-            for element in notes_to_process:
-                if isinstance(element, note.Note):
-                    prompt_notes.append(str(element.pitch))
-                elif isinstance(element, chord.Chord):
-                    prompt_notes.append('.'.join(str(p) for p in element.pitches))
+            print(f"MIDI 파일 생성 중: {midi_path}")
+            score.write('midi', fp=midi_path)
+            print(f"MIDI 파일 생성 완료: {midi_path}")
             
-            # 악보 정보를 바탕으로 프롬프트 생성
-            music_prompt = ' '.join(prompt_notes[:8])
-            if not music_prompt:
-                music_prompt = "classical piano melody"
-            else:
-                music_prompt = f"classical music with notes: {music_prompt}"
+            # 곡 길이 계산
+            duration = int(score.duration.quarterLength / score.metronomeMarkBoundaries()[0][-1].number * 60) if score.metronomeMarkBoundaries() else 180
+
+            # MIDI 파일 URL 생성 (Flask에서 서빙)
+            midi_url = f"http://127.0.0.1:5000/api/midi/{midi_filename}"
             
-            print(f"생성된 음악 프롬프트: {music_prompt}")
+            # 결과 데이터 생성
+            result_data = {
+                "id": unique_filename,
+                "title": f"악보 연주 - {uploaded_file.filename}",
+                "audioUrl": midi_url,
+                "midiPath": midi_path,
+                "genres": ["Classical"],
+                "moods": [],
+                "duration": duration,
+                "createdAt": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "type": "score-midi"
+            }
+
+            print(f"MIDI 파일 준비 완료: {result_data}")
 
         except Exception as e:
-            print(f"Music21 파싱 오류: {e}")
-            print(f"기본 프롬프트로 대체합니다.")
-            music_prompt = "gentle classical piano music"
+            print(f"MIDI 변환 오류: {e}")
+            import traceback
+            traceback.print_exc()
+            return jsonify({'message': f'MIDI 변환 중 오류가 발생했습니다: {str(e)}'}), 500
 
-        try:
-            # 음악 생성을 위한 태스크 ID 생성
-            task_id = uuid.uuid4().hex
-            _set_task_status(task_id, "queued")
-            
-            # 음악 생성 워커 시작
-            threading.Thread(
-                target=worker_generate,
-                args=(task_id, music_prompt, [], [], 10, None),
-                daemon=True
-            ).start()
-            
+        finally:
             # 임시 파일 정리
             try:
                 os.remove(pdf_path)
                 if music_file_path and os.path.exists(music_file_path):
                     os.remove(music_file_path)
-                # 로그 파일도 정리
-                log_files = [f for f in os.listdir(upload_folder) if f.endswith('.log')]
-                for log_file in log_files:
-                    try:
-                        os.remove(os.path.join(upload_folder, log_file))
-                    except:
-                        pass
-                # OMR 파일도 정리
-                omr_files = [f for f in os.listdir(upload_folder) if f.endswith('.omr')]
-                for omr_file in omr_files:
-                    try:
-                        os.remove(os.path.join(upload_folder, omr_file))
-                    except:
-                        pass
+                # 로그 및 OMR 파일 정리
+                for file_item in os.listdir(upload_folder):
+                    if file_item.endswith(('.log', '.omr')):
+                        try:
+                            os.remove(os.path.join(upload_folder, file_item))
+                        except:
+                            pass
             except Exception as cleanup_error:
                 print(f"파일 정리 중 오류: {cleanup_error}")
-            
-            return jsonify({'taskId': task_id})
-
-        except Exception as e:
-            print(f"음악 생성 오류: {e}")
-            return jsonify({'message': '음악 생성에 실패했습니다.'}), 500
+        
+        return jsonify({
+            'success': True,
+            'result': result_data
+        })
 
     return jsonify({'message': '잘못된 파일 형식입니다.'}), 400
+
+# MIDI 파일 서빙 엔드포인트
+@app.route('/api/midi/<filename>', methods=['GET'])
+def serve_midi(filename):
+    backend_dir = os.path.dirname(os.path.abspath(__file__))
+    midi_folder = os.path.join(backend_dir, 'generated_midi')
+    midi_path = os.path.join(midi_folder, filename)
+    
+    if os.path.exists(midi_path):
+        return send_file(midi_path, mimetype='audio/midi', as_attachment=False)
+    else:
+        return jsonify({'message': 'MIDI 파일을 찾을 수 없습니다.'}), 404
 
 # ───── endpoints ────────────────────────────────────────────────────
 @app.route("/api/music/generate", methods=["POST"])
 def generate_music():
-    """
-    JSON + multipart/form-data 둘 다 지원
-    - JSON: {"description","genres","moods","duration"}
-    - multipart: fields(description, genres(json), moods(json), duration, file=<audio>)
-    """
     ct = (request.content_type or "")
     is_multipart = ct.startswith("multipart/form-data")
 

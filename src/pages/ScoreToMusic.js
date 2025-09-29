@@ -1,4 +1,4 @@
-// musicgen-app-main/src/pages/ScoreToMusic.js
+// ScoreToMusic.js - MIDI 파일 직접 재생 버전
 
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
@@ -33,68 +33,6 @@ const ScoreToMusic = () => {
         }
     };
 
-    // 작업 상태를 폴링하는 함수
-    const pollTaskStatus = async (taskId) => {
-        const maxAttempts = 60; // 최대 5분 대기 (5초 간격)
-        let attempts = 0;
-
-        while (attempts < maxAttempts) {
-            try {
-                const response = await fetch(`http://127.0.0.1:5000/api/music/task/status?taskId=${taskId}`);
-                if (!response.ok) {
-                    throw new Error('작업 상태 확인 실패');
-                }
-
-                const statusData = await response.json();
-                console.log('작업 상태:', statusData);
-                
-                if (statusData.status === 'succeeded') {
-                    // 음악 데이터 객체 생성
-                    const musicData = {
-                        id: statusData.result?.id || `score_${Date.now()}`,
-                        title: statusData.result?.title || `악보 기반 생성 음악`,
-                        audioUrl: statusData.audioUrl || statusData.result?.audioUrl,
-                        genres: statusData.result?.genres || ['Classical'],
-                        moods: statusData.result?.moods || [],
-                        duration: statusData.result?.duration || 180,
-                        createdAt: statusData.result?.createdAt || new Date().toISOString(),
-                        type: 'score-generated',
-                        originalFile: fileName,
-                        targetGenre: 'Classical'
-                    };
-
-                    console.log('생성된 musicData:', musicData);
-
-                    // localStorage에 저장 (Context 백업용)
-                    localStorage.setItem('scoreGeneratedMusic', JSON.stringify(musicData));
-                    console.log('localStorage에 저장 완료');
-
-                    // Context가 있다면 시도
-                    if (actions.setResult) {
-                        actions.setResult({ convertedMusic: musicData });
-                        console.log('setResult 호출 완료');
-                    }
-
-                    return true;
-                    
-                } else if (statusData.status === 'failed') {
-                    throw new Error(statusData.error || '음악 생성 실패');
-                } else if (statusData.status === 'running' || statusData.status === 'queued') {
-                    // 진행중: 5초 후 다시 확인
-                    await new Promise(resolve => setTimeout(resolve, 5000));
-                    attempts++;
-                } else {
-                    throw new Error(`알 수 없는 작업 상태: ${statusData.status}`);
-                }
-            } catch (error) {
-                console.error('작업 상태 확인 중 오류:', error);
-                throw error;
-            }
-        }
-        
-        throw new Error('작업 시간 초과 (5분)');
-    };
-
     const handleSubmit = async () => {
         if (!pdfFile) {
             alert("악보 PDF 파일을 업로드해주세요.");
@@ -106,7 +44,7 @@ const ScoreToMusic = () => {
         formData.append('score', pdfFile);
 
         try {
-            // 1. 악보 처리 요청
+            // 악보 처리 요청 (MIDI 생성)
             const response = await fetch('http://127.0.0.1:5000/api/process-score', {
                 method: 'POST',
                 body: formData,
@@ -114,28 +52,40 @@ const ScoreToMusic = () => {
 
             if (!response.ok) {
                 const errorData = await response.json();
-                throw new Error(errorData.message || '음악 생성에 실패했습니다.');
+                throw new Error(errorData.message || '악보 처리에 실패했습니다.');
             }
 
             const data = await response.json();
-            const taskId = data.taskId;
+            console.log('Server response:', data);
 
-            if (!taskId) {
-                throw new Error('작업 ID를 받을 수 없습니다.');
+            if (!data.success || !data.result) {
+                throw new Error('MIDI 파일 생성에 실패했습니다.');
             }
 
-            // 2. 작업 상태 폴링
-            await pollTaskStatus(taskId);
+            // Result에 MIDI 음악 데이터 저장
+            actions.setResult?.({
+                convertedMusic: {
+                    id: data.result.id,
+                    title: data.result.title,
+                    audioUrl: data.result.audioUrl,
+                    genres: data.result.genres || ['Classical'],
+                    moods: data.result.moods || [],
+                    duration: data.result.duration || 180,
+                    createdAt: data.result.createdAt || new Date().toISOString(),
+                    type: 'score-midi',
+                    originalFile: fileName,
+                    targetGenre: 'Classical'
+                }
+            });
 
-            // 3. 결과 페이지로 이동 (약간 지연)
-            setTimeout(() => {
-                console.log('이동 전 최종 상태 확인');
-                navigate('/result');
-            }, 1000); // 1초 대기 후 이동
+            console.log('Music data set successfully');
+
+            // 결과 페이지로 이동
+            navigate('/result');
 
         } catch (error) {
-            console.error("Error generating music from score:", error);
-            alert(`음악 생성 중 오류가 발생했습니다: ${error.message}`);
+            console.error("Error processing score:", error);
+            alert(`악보 처리 중 오류가 발생했습니다: ${error.message}`);
         } finally {
             setIsLoading(false);
         }
@@ -148,7 +98,7 @@ const ScoreToMusic = () => {
                     악보 연주하기 🎼
                 </Typography>
                 <Typography variant="body1" color="text.secondary" sx={{ mb: 4 }}>
-                    PDF 악보 파일을 업로드하면 AI가 분석하여 음악을 연주해줍니다.
+                    PDF 악보 파일을 업로드하면 AI가 분석하여 MIDI로 연주해줍니다.
                 </Typography>
 
                 <Box
@@ -157,7 +107,12 @@ const ScoreToMusic = () => {
                         borderRadius: '10px',
                         p: 4,
                         mb: 3,
-                        cursor: 'pointer'
+                        cursor: 'pointer',
+                        transition: 'all 0.3s',
+                        '&:hover': {
+                            borderColor: 'primary.main',
+                            bgcolor: 'action.hover'
+                        }
                     }}
                     onClick={() => document.getElementById('pdf-upload').click()}
                 >
@@ -182,13 +137,18 @@ const ScoreToMusic = () => {
                     disabled={isLoading || !pdfFile}
                     sx={{ minWidth: '200px', minHeight: '50px' }}
                 >
-                    {isLoading ? <CircularProgress size={24} /> : '음악 생성'}
+                    {isLoading ? <CircularProgress size={24} /> : 'MIDI 생성 및 연주'}
                 </Button>
 
                 {isLoading && (
-                    <Typography variant="body2" sx={{ mt: 2, color: 'text.secondary' }}>
-                        악보를 분석하고 음악을 생성하는 중입니다... 최대 5분이 소요될 수 있습니다.
-                    </Typography>
+                    <Box sx={{ mt: 3 }}>
+                        <Typography variant="body2" sx={{ color: 'text.secondary' }}>
+                            악보를 분석하고 MIDI 파일을 생성하는 중입니다...
+                        </Typography>
+                        <Typography variant="caption" sx={{ color: 'text.disabled', mt: 1, display: 'block' }}>
+                            PDF → MusicXML → MIDI 변환 진행중 (약 1-2분 소요)
+                        </Typography>
+                    </Box>
                 )}
             </Paper>
         </Container>
