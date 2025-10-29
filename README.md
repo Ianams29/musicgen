@@ -51,6 +51,18 @@ AI Music Studio는 사용자가 텍스트 프롬프트나 오디오 파일을 �
 -   npm 또는 yarn\
 -   Python 3
 
+-    https://github.com/Audiveris/audiveris/releases/tag/5.6.2
+-    audiveris-5.6.2-windows-x86_64.msi 다운로드
+-    C:\Program Files\Audiveris 경로
+
+-    https://github.com/FluidSynth/fluidsynth/releases/tag/v2.3.7
+-    fluidsynth-2.3.7-win10-x64.zip 다운로드
+-    C:\Program Files\FluidSynth\ 경로
+-    C:\Program Files\FluidSynth\bin 환경변수 추가
+    
+-    https://member.keymusician.com/Member/FluidR3_GM/index.html
+-    FluidR3_GM.sf2 다운로드 
+-    C:\soundfonts\FluidR3_GM.sf2 경로
 ### 설치 및 실행
 
 1.  **저장소 클론**
@@ -83,6 +95,9 @@ AI Music Studio는 사용자가 텍스트 프롬프트나 오디오 파일을 �
     # 의존성 설치
     pip install -r requirements.txt
 
+    #Java21 설치
+    winget install Microsoft.OpenJDK.21
+    
     # .env 파일 생성 및 API 키 설정
     # (PAPAGO_CLIENT_ID, PAPAGO_CLIENT_SECRET, REPLICATE_API_TOKEN 등)
 
