@@ -11,6 +11,8 @@ import { subscribeToUserLibrary } from '../services/libraryApi';
 import { auth as firebaseAuth } from '../lib/firebase';
 
 import { removeMusicFromLibrary } from '../services/libraryApi';
+
+import { setFavoriteStatus } from '../services/libraryApi';
 // 초기 상태 정의
 const initialState = {
   // 음악 생성 관련 상태
@@ -549,7 +551,34 @@ export function MusicContextProvider({ children }) {
       // 실제로는 Firestore 실시간 업데이트가 다시 반영해줄 것임
     }
   }, [state.auth.user?.uid, state.library.musicList, pushNotification]),
-  
+
+    toggleFavorite: useCallback(async (musicId, musicType, currentFavoriteStatus) => {
+      const userId = state.auth.user?.uid;
+      if (!userId) {
+        pushNotification({ type: 'error', message: '로그인이 필요합니다.' });
+        return;
+      }
+
+      try {
+        const newStatus = !currentFavoriteStatus; // 상태 반전
+        await setFavoriteStatus(userId, musicId, musicType, newStatus);
+
+        // 로컬 상태를 직접 조작할 필요가 없습니다.
+        // 1단계에서 updateDoc이 실행되면, MusicContext의
+        // onSnapshot 리스너가
+        // 변경을 감지하고 SET_LIBRARY_ITEMS를 호출하여
+        // UI를 자동으로 새로고침합니다.
+
+        pushNotification({
+          type: 'success',
+          message: newStatus ? '즐겨찾기에 추가했습니다.' : '즐겨찾기에서 제거했습니다.'
+        });
+
+      } catch (error) {
+        console.error('즐겨찾기 업데이트 실패:', error);
+        pushNotification({ type: 'error', message: '상태 변경에 실패했습니다.' });
+      }
+    }, [state.auth.user?.uid, pushNotification]),
 
     // 인증 관련 액션들
     setAuthStatus: useCallback((status) => {

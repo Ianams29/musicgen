@@ -5,7 +5,7 @@ import {
 } from '@mui/material';
 import {
   CheckCircle, PlayArrow, Pause, Download, Refresh, Share, Home, LibraryMusic, VolumeUp, BookmarkBorder,
-  ContentCopy, Twitter, Instagram
+  ContentCopy, Twitter, Facebook
 } from '@mui/icons-material';
 import { useNavigate } from 'react-router-dom';
 
@@ -14,6 +14,11 @@ import { GENRE_OPTIONS } from '../components/common/GenreSelector';
 import { MOOD_OPTIONS } from '../components/common/MoodSelector';
 import AudioWaveform from '../components/common/AudioWaveform';
 import { addMusicToLibrary } from '../services/libraryApi';
+import { 
+  uploadMusicToStorage, 
+  isFirebaseStorageUrl, 
+  isLocalServerUrl 
+} from '../services/storageApi';
 
 const ResultPage = () => {
   const navigate = useNavigate();
@@ -33,6 +38,10 @@ const ResultPage = () => {
   const [volume, setVolume] = useState(70);
   const [isSaving, setIsSaving] = useState(false);
   const [shareDialogOpen, setShareDialogOpen] = useState(false);
+  const [publicUrl, setPublicUrl] = useState(null); // 변환된 공용 URL 저장
+  const [isUploading, setIsUploading] = useState(false); // 업로드 중 상태
+  const [uploadError, setUploadError] = useState(null); // 업로드 실패 에러
+  const user = state.auth.user; // 사용자 정보
 
   // 결과 데이터 (result > generation 순으로 조회)
   const generatedFromResult = state.result?.generatedMusic;
@@ -128,6 +137,65 @@ const ResultPage = () => {
     }
   };
 
+  const getPublicUrl = async () => {
+    // 1. 이미 변환된 URL이 state에 있으면 즉시 반환
+    if (publicUrl) {
+      return publicUrl;
+    }
+
+    // 2. musicData나 audioUrl이 없으면 에러
+    if (!musicData || !musicData.audioUrl) {
+      throw new Error('공유할 오디오 데이터가 없습니다.');
+    }
+
+    const localUrl = musicData.audioUrl;
+
+    // 3. 이미 Firebase Storage URL이면 (예: 라이브러리에서 재생)
+    if (isFirebaseStorageUrl(localUrl)) {
+      setPublicUrl(localUrl); // state에 저장
+      return localUrl;
+    }
+
+    // 4. 로컬 URL(127.0.0.1)이 아니면 (예: Replicate URL)
+    if (!isLocalServerUrl(localUrl) && !localUrl.startsWith('/')) {
+      // Replicate 같은 외부 URL도 그대로 사용
+      setPublicUrl(localUrl);
+      return localUrl;
+    }
+
+    // 5. 로컬 URL이므로 Firebase Storage에 업로드
+    if (!user) {
+      throw new Error('파일 업로드를 위해 로그인이 필요합니다.');
+    }
+
+    console.log('로컬 URL을 Firebase Storage로 업로드 시작...', localUrl);
+    setUploadError(null);
+    setIsUploading(true); // 업로드 시작 상태
+
+    try {
+      const fileName = musicData.title?.replace(/[^a-zA-Z0-9.-]/g, '_') || 'music';
+      const fileType = musicData.type === 'beat' ? 'beats' : 'tracks';
+
+      // storageApi.js의 함수 사용
+      const newPublicUrl = await uploadMusicToStorage(
+        user.uid,
+        localUrl,
+        `${fileName}.wav`, // 파일명 (server.py는 wav를 생성함)
+        fileType
+      );
+
+      setPublicUrl(newPublicUrl); // state에 저장
+      return newPublicUrl;
+
+    } catch (error) {
+      console.error('Firebase Storage 업로드 실패:', error);
+      setUploadError(error.message);
+      throw new Error('파일을 Storage에 업로드하지 못했습니다.');
+    } finally {
+      setIsUploading(false); // 업로드 종료 상태
+    }
+  };
+
   const handleTimeChange = (e, newValue) => {
     setCurrentTime(newValue);
     if (audioRef.current) audioRef.current.currentTime = newValue;
@@ -160,38 +228,35 @@ const ResultPage = () => {
   };
 
   const handleShareOption = async (option) => {
-    const fileUrl = musicData.audioUrl; // 오디오 파일 URL
+    let fileUrl;
+    try {
+      // 1. 공용 URL 가져오기 시도
+      fileUrl = await getPublicUrl();
+    } catch (error) {
+      // 2. 실패 시 알림 (예: 로그인이 안 되어 업로드 불가)
+      actions.addNotification?.({ 
+        type: 'error', 
+        message: `공유 링크 생성 실패: ${error.message}`
+      });
+      return; // 함수 종료
+    }
     const shareText = `"${musicData.title}" - AI로 생성한 음악`;
     const fileName = `${musicData.title}.${audioUrl.endsWith('.wav') ? 'wav' : 'mp3'}`;
     
     switch (option) {
-      case 'instagram':
-        // 인스타그램 - 파일 다운로드 후 공유
-        if (/iPhone|iPad|iPod|Android/i.test(navigator.userAgent)) {
-          // 모바일에서는 파일을 먼저 다운로드하도록 안내
-          actions.addNotification?.({ 
-            type: 'info', 
-            message: '파일을 다운로드한 후 Instagram 앱에서 업로드해주세요.' 
-          });
-          // 파일 다운로드
-          const a = document.createElement('a');
-          a.href = fileUrl;
-          a.download = fileName;
-          document.body.appendChild(a);
-          a.click();
-          a.remove();
-        } else {
-          actions.addNotification?.({ 
-            type: 'info', 
-            message: 'Instagram 공유는 모바일에서 파일을 다운로드 후 업로드해주세요.' 
-          });
-        }
+      case 'facebook':
+        const facebookUrl = `https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(fileUrl)}`;
+        window.open(facebookUrl, '_blank', 'width=800,height=600');
+        actions.addNotification?.({ 
+          type: 'success', 
+          message: 'Facebook 공유 창이 열렸습니다!' 
+        });
         break;
         
       case 'twitter':
         // X (트위터) - 파일 URL과 함께 공유
         const twitterUrl = `https://twitter.com/intent/tweet?text=${encodeURIComponent(shareText + '\n' + fileUrl)}`;
-        window.open(twitterUrl, '_blank', 'width=600,height=400');
+        window.open(twitterUrl, '_blank', 'width=800,height=600');
         actions.addNotification?.({ 
           type: 'success', 
           message: 'X(트위터)로 공유 창이 열렸습니다! 파일 링크가 포함되어 있습니다.' 
@@ -251,53 +316,50 @@ const ResultPage = () => {
   };
 
   const handleSaveToLibrary = async () => {
-    const user = state.auth.user;
+    //const user = state.auth.user;
     
     if (!user) {
-      actions.addNotification?.({ 
-        type: 'error', 
-        message: '로그인이 필요합니다.' 
-      });
+      actions.addNotification?.({ type: 'error', message: '로그인이 필요합니다.' });
       return;
     }
-
     if (!musicData) {
-      actions.addNotification?.({ 
-        type: 'error', 
-        message: '저장할 음악 데이터가 없습니다.' 
-      });
+      actions.addNotification?.({ type: 'error', message: '저장할 음악 데이터가 없습니다.' });
       return;
     }
 
     setIsSaving(true);
     
     try {
-      // Firebase에 저장
-      await addMusicToLibrary(user.uid, musicData);
+      // 1. 저장 전, 공용 URL을 먼저 확보
+      const finalAudioUrl = await getPublicUrl();
+
+      // 2. musicData의 audioUrl을 공용 URL로 교체하여 새 객체 생성
+      const dataToSave = {
+        ...musicData,
+        audioUrl: finalAudioUrl,
+        // (만약 Replicate URL이었다면) 원본 임시 URL도 백업
+        sourceUrl: (musicData.audioUrl !== finalAudioUrl) ? musicData.audioUrl : null,
+      };
+
+      // 3. Firebase에 *수정된 데이터(dataToSave)*를 저장
+      // [기존: addMusicToLibrary(user.uid, musicData)]
+      const docId = await addMusicToLibrary(user.uid, dataToSave);
       
-      // Context에도 추가 (즉시 UI 업데이트)
-      actions.addToLibrary?.(musicData);
+      // 4. Context에도 *수정된 데이터(dataToSave)*를 추가
+      // (ID가 없을 경우를 대비해 docId도 포함)
+      // [기존: actions.addToLibrary?.(musicData)]
+      actions.addToLibrary?.({ ...dataToSave, id: musicData.id || docId });
       
-      actions.addNotification?.({ 
-        type: 'success', 
-        message: '라이브러리에 추가되었습니다.' 
-      });
+      actions.addNotification?.({ type: 'success', message: '라이브러리에 추가되었습니다.' });
       
-      console.log('라이브러리 저장 성공:', musicData);
+      console.log('라이브러리 저장 성공 (공용 URL):', dataToSave);
     } catch (error) {
       console.error('라이브러리 저장 실패:', error);
       
-      // 이미 존재하는 경우 에러 메시지
       if (error.message?.includes('already exists')) {
-        actions.addNotification?.({ 
-          type: 'info', 
-          message: '이미 라이브러리에 있는 음악입니다.' 
-        });
+        actions.addNotification?.({ type: 'info', message: '이미 라이브러리에 있는 음악입니다.' });
       } else {
-        actions.addNotification?.({ 
-          type: 'error', 
-          message: '라이브러리 저장에 실패했습니다.' 
-        });
+        actions.addNotification?.({ type: 'error', message: `라이브러리 저장 실패: ${error.message}` });
       }
     } finally {
       setIsSaving(false);
@@ -580,17 +642,18 @@ const ResultPage = () => {
           <List>
             <ListItem disablePadding>
               <ListItemButton 
-                onClick={() => handleShareOption('instagram')}
+                onClick={() => handleShareOption('facebook')} // 'instagram' -> 'facebook'
                 sx={{ 
                   py: 2,
                   '&:hover': { bgcolor: colors.border }
                 }}
               >
                 <ListItemIcon sx={{ minWidth: 48 }}>
-                  <Instagram sx={{ color: '#E1306C', fontSize: 32 }} />
+                  {/* Instagram 아이콘 -> Facebook 아이콘 */}
+                  <Facebook sx={{ color: '#1877F2', fontSize: 32 }} /> 
                 </ListItemIcon>
                 <ListItemText 
-                  primary="Instagram" 
+                  primary="Facebook" // 'Instagram' -> 'Facebook'
                   sx={{ '& .MuiListItemText-primary': { color: colors.text } }}
                 />
               </ListItemButton>
@@ -608,7 +671,7 @@ const ResultPage = () => {
                   <Twitter sx={{ color: '#1DA1F2', fontSize: 32 }} />
                 </ListItemIcon>
                 <ListItemText 
-                  primary="X (트위터)" 
+                  primary="X" 
                   sx={{ '& .MuiListItemText-primary': { color: colors.text } }}
                 />
               </ListItemButton>
