@@ -1,4 +1,8 @@
 FluidR3_GM 다운 -> C:\soundfonts\FluidR3_GM.sf2
-fluidsynth 다운 https://github.com/FluidSynth/fluidsynth/releases/tag/v2.3.7 
 
+Audiveris 다운 -> https://github.com/Audiveris/audiveris/releases/tag/5.6.2
+
+fluidsynth 다운 https://github.com/FluidSynth/fluidsynth/releases/tag/v2.3.7 
 시스템 변수 환경변수 추가 Path->C:\Program Files\fluidsynth\bin
+
+Java 21 설치 -> winget install Microsoft.OpenJDK.21
